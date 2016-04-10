@@ -17,8 +17,6 @@ var (
 	init1 = Lanes{0x3bd39e10cb0ef593, 0xc0acf169b5f18a8c, 0xbe5466cf34e90c6c, 0x452821e638d01377}
 )
 
-const debug = false
-
 type state struct {
 	v0, v1 Lanes
 }
