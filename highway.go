@@ -7,7 +7,7 @@ import (
 
 const (
 	NumLanes   = 4
-	PacketSize = 8 * NumLanes
+	packetSize = 8 * NumLanes
 )
 
 type Lanes [NumLanes]uint64
@@ -19,12 +19,12 @@ var (
 
 const debug = false
 
-type State struct {
+type state struct {
 	v0, v1 Lanes
 }
 
-func New(keys Lanes) State {
-	var s State
+func newstate(keys Lanes) state {
+	var s state
 	for lane, key := range keys {
 		s.v0[lane] = init0[lane] ^ key
 		s.v1[lane] = init1[lane] ^ key
@@ -33,7 +33,7 @@ func New(keys Lanes) State {
 	return s
 }
 
-func (s *State) Update(packet []byte) {
+func (s *state) Update(packet []byte) {
 
 	var mul1 Lanes
 
@@ -57,7 +57,7 @@ func (s *State) Update(packet []byte) {
 	}
 }
 
-func (s *State) Finalize() uint64 {
+func (s *state) Finalize() uint64 {
 
 	s.PermuteAndUpdate()
 	s.PermuteAndUpdate()
@@ -67,9 +67,9 @@ func (s *State) Finalize() uint64 {
 	return s.v0[0] + s.v1[0]
 }
 
-func (s *State) ZipperMerge(mul0, v0 []byte) []byte {
+func (s *state) ZipperMerge(mul0, v0 []byte) []byte {
 
-	for half := 0; half < PacketSize; half += PacketSize / 2 {
+	for half := 0; half < packetSize; half += packetSize / 2 {
 		v0[half+0] = mul0[half+3]
 		v0[half+1] = mul0[half+12]
 		v0[half+2] = mul0[half+2]
@@ -91,29 +91,29 @@ func (s *State) ZipperMerge(mul0, v0 []byte) []byte {
 	return v0
 }
 
-func Rot32(x uint64) uint64 {
+func rot32(x uint64) uint64 {
 	return (x >> 32) | (x << 32)
 }
 
-func (s *State) PermuteAndUpdate() {
+func (s *state) PermuteAndUpdate() {
 	var permuted [32]byte
 
-	binary.LittleEndian.PutUint64(permuted[0:], Rot32(s.v0[2]))
-	binary.LittleEndian.PutUint64(permuted[8:], Rot32(s.v0[3]))
-	binary.LittleEndian.PutUint64(permuted[16:], Rot32(s.v0[0]))
-	binary.LittleEndian.PutUint64(permuted[24:], Rot32(s.v0[1]))
+	binary.LittleEndian.PutUint64(permuted[0:], rot32(s.v0[2]))
+	binary.LittleEndian.PutUint64(permuted[8:], rot32(s.v0[3]))
+	binary.LittleEndian.PutUint64(permuted[16:], rot32(s.v0[0]))
+	binary.LittleEndian.PutUint64(permuted[24:], rot32(s.v0[1]))
 
 	s.Update(permuted[:])
 }
 
 func Hash(key Lanes, bytes []byte) uint64 {
 
-	s := New(key)
+	s := newstate(key)
 
 	size := len(bytes)
 
 	// Hash entire 32-byte packets.
-	remainder := size & (PacketSize - 1)
+	remainder := size & (packetSize - 1)
 	truncatedSize := size - remainder
 	// var packets []uint64 // reinterpret_cast<const uint64_t*>(bytes);
 	biter := bytes
@@ -130,9 +130,9 @@ func Hash(key Lanes, bytes []byte) uint64 {
 		packet4 += uint32(finalBytes[i]) << uint(i*8)
 	}
 
-	var finalPacket [PacketSize]byte
+	var finalPacket [packetSize]byte
 	copy(finalPacket[:], bytes[truncatedSize:size-remainderMod4])
-	binary.LittleEndian.PutUint32(finalPacket[PacketSize-4:], packet4)
+	binary.LittleEndian.PutUint32(finalPacket[packetSize-4:], packet4)
 
 	s.Update(finalPacket[:])
 
