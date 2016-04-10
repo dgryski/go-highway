@@ -1,4 +1,7 @@
 // Package highway implements Google's HighwayHash
+/*
+   https://github.com/google/highwayhash
+*/
 package highway
 
 import (
