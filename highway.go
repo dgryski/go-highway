@@ -23,32 +23,36 @@ type State struct {
 	v0, v1 Lanes
 }
 
-func New(keys Lanes) *State {
+func New(keys Lanes) State {
 	var s State
 	for lane, key := range keys {
 		s.v0[lane] = init0[lane] ^ key
 		s.v1[lane] = init1[lane] ^ key
 	}
 
-	return &s
+	return s
 }
 
-func (s *State) Update(packet *Lanes) {
+func (s *State) Update(packet []byte) {
 
-	var mul0, mul1 Lanes
+	var mul1 Lanes
 
-	for lane := range packet {
-		s.v1[lane] += packet[lane]
+	var mul0 [32]byte
+
+	for lane := 0; lane < NumLanes; lane++ {
+		s.v1[lane] += binary.LittleEndian.Uint64(packet[8*lane:])
 		const mask32 = 0xFFFFFFFF
 		s.v0[lane] |= 0x70000001
 		mul32 := s.v0[lane] & mask32
-		mul0[lane] = mul32 * (s.v1[lane] & mask32)
+		binary.LittleEndian.PutUint64(mul0[8*lane:], mul32*(s.v1[lane]&mask32))
 		mul1[lane] = mul32 * (s.v1[lane] >> 32)
 	}
 
-	merged := s.ZipperMerge(&mul0)
-	for lane := range merged {
-		s.v0[lane] += merged[lane]
+	var merged [32]byte
+	s.ZipperMerge(mul0[:], merged[:])
+
+	for lane := range mul1 {
+		s.v0[lane] += binary.LittleEndian.Uint64(merged[8*lane:])
 		s.v1[lane] += mul1[lane]
 	}
 }
@@ -63,41 +67,28 @@ func (s *State) Finalize() uint64 {
 	return s.v0[0] + s.v1[0]
 }
 
-func (s *State) ZipperMerge(mul0 *Lanes) Lanes {
-
-	var mul0b [PacketSize]byte
-	binary.LittleEndian.PutUint64(mul0b[0:], mul0[0])
-	binary.LittleEndian.PutUint64(mul0b[8:], mul0[1])
-	binary.LittleEndian.PutUint64(mul0b[16:], mul0[2])
-	binary.LittleEndian.PutUint64(mul0b[24:], mul0[3])
-
-	var v0 [PacketSize]byte
+func (s *State) ZipperMerge(mul0, v0 []byte) []byte {
 
 	for half := 0; half < PacketSize; half += PacketSize / 2 {
-		v0[half+0] = mul0b[half+3]
-		v0[half+1] = mul0b[half+12]
-		v0[half+2] = mul0b[half+2]
-		v0[half+3] = mul0b[half+5]
-		v0[half+4] = mul0b[half+14]
-		v0[half+5] = mul0b[half+1]
-		v0[half+6] = mul0b[half+15]
-		v0[half+7] = mul0b[half+0]
-		v0[half+8] = mul0b[half+11]
-		v0[half+9] = mul0b[half+4]
-		v0[half+10] = mul0b[half+10]
-		v0[half+11] = mul0b[half+13]
-		v0[half+12] = mul0b[half+9]
-		v0[half+13] = mul0b[half+6]
-		v0[half+14] = mul0b[half+8]
-		v0[half+15] = mul0b[half+7]
+		v0[half+0] = mul0[half+3]
+		v0[half+1] = mul0[half+12]
+		v0[half+2] = mul0[half+2]
+		v0[half+3] = mul0[half+5]
+		v0[half+4] = mul0[half+14]
+		v0[half+5] = mul0[half+1]
+		v0[half+6] = mul0[half+15]
+		v0[half+7] = mul0[half+0]
+		v0[half+8] = mul0[half+11]
+		v0[half+9] = mul0[half+4]
+		v0[half+10] = mul0[half+10]
+		v0[half+11] = mul0[half+13]
+		v0[half+12] = mul0[half+9]
+		v0[half+13] = mul0[half+6]
+		v0[half+14] = mul0[half+8]
+		v0[half+15] = mul0[half+7]
 	}
 
-	return Lanes{
-		binary.LittleEndian.Uint64(v0[0:]),
-		binary.LittleEndian.Uint64(v0[8:]),
-		binary.LittleEndian.Uint64(v0[16:]),
-		binary.LittleEndian.Uint64(v0[24:]),
-	}
+	return v0
 }
 
 func Rot32(x uint64) uint64 {
@@ -105,8 +96,14 @@ func Rot32(x uint64) uint64 {
 }
 
 func (s *State) PermuteAndUpdate() {
-	permuted := Lanes{Rot32(s.v0[2]), Rot32(s.v0[3]), Rot32(s.v0[0]), Rot32(s.v0[1])}
-	s.Update(&permuted)
+	var permuted [32]byte
+
+	binary.LittleEndian.PutUint64(permuted[0:], Rot32(s.v0[2]))
+	binary.LittleEndian.PutUint64(permuted[8:], Rot32(s.v0[3]))
+	binary.LittleEndian.PutUint64(permuted[16:], Rot32(s.v0[0]))
+	binary.LittleEndian.PutUint64(permuted[24:], Rot32(s.v0[1]))
+
+	s.Update(permuted[:])
 }
 
 func Hash(key Lanes, bytes []byte) uint64 {
@@ -121,15 +118,8 @@ func Hash(key Lanes, bytes []byte) uint64 {
 	// var packets []uint64 // reinterpret_cast<const uint64_t*>(bytes);
 	biter := bytes
 	for i := 0; i < truncated_size/8; i += NumLanes {
-		var packet = Lanes{
-			binary.LittleEndian.Uint64(biter[0:]),
-			binary.LittleEndian.Uint64(biter[8:]),
-			binary.LittleEndian.Uint64(biter[16:]),
-			binary.LittleEndian.Uint64(biter[24:]),
-		}
+		s.Update(biter)
 		biter = biter[32:]
-
-		s.Update(&packet)
 	}
 
 	// Update with final 32-byte packet.
@@ -144,14 +134,7 @@ func Hash(key Lanes, bytes []byte) uint64 {
 	copy(final_packet[:], bytes[truncated_size:size-remainder_mod4])
 	binary.LittleEndian.PutUint32(final_packet[PacketSize-4:], packet4)
 
-	var packet = Lanes{
-		binary.LittleEndian.Uint64(final_packet[0:]),
-		binary.LittleEndian.Uint64(final_packet[8:]),
-		binary.LittleEndian.Uint64(final_packet[16:]),
-		binary.LittleEndian.Uint64(final_packet[24:]),
-	}
-
-	s.Update(&packet)
+	s.Update(final_packet[:])
 
 	return s.Finalize()
 }
