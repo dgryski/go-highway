@@ -116,23 +116,21 @@ func Hash(key Lanes, bytes []byte) uint64 {
 	// Hash entire 32-byte packets.
 	remainder := size & (packetSize - 1)
 	truncatedSize := size - remainder
-	// var packets []uint64 // reinterpret_cast<const uint64_t*>(bytes);
-	biter := bytes
 	for i := 0; i < truncatedSize/8; i += NumLanes {
-		s.Update(biter)
-		biter = biter[32:]
+		s.Update(bytes)
+		bytes = bytes[32:]
 	}
 
 	// Update with final 32-byte packet.
 	remainderMod4 := remainder & 3
 	packet4 := uint32(size) << 24
-	finalBytes := bytes[size-remainderMod4:]
+	finalBytes := bytes[len(bytes)-remainderMod4:]
 	for i := 0; i < remainderMod4; i++ {
 		packet4 += uint32(finalBytes[i]) << uint(i*8)
 	}
 
 	var finalPacket [packetSize]byte
-	copy(finalPacket[:], bytes[truncatedSize:size-remainderMod4])
+	copy(finalPacket[:], bytes[:len(bytes)-remainderMod4])
 	binary.LittleEndian.PutUint32(finalPacket[packetSize-4:], packet4)
 
 	s.Update(finalPacket[:])
