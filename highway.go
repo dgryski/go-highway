@@ -21,14 +21,20 @@ var (
 )
 
 type state struct {
-	v0, v1 Lanes
+	v0, v1     Lanes
+	mul0, mul1 Lanes
 }
 
 func newstate(keys Lanes) state {
 	var s state
-	for lane, key := range keys {
-		s.v0[lane] = init0[lane] ^ key
-		s.v1[lane] = init1[lane] ^ key
+
+	var permutedKeys Lanes
+	s.Permute(&keys, &permutedKeys)
+	for lane := range keys {
+		s.v0[lane] = init0[lane] ^ keys[lane]
+		s.v1[lane] = init1[lane] ^ permutedKeys[lane]
+		s.mul0[lane] = init0[lane]
+		s.mul1[lane] = init1[lane]
 	}
 
 	return s
@@ -36,25 +42,35 @@ func newstate(keys Lanes) state {
 
 func (s *state) Update(packet []byte) {
 
-	var mul1 Lanes
-
-	var mul0 [32]byte
-
-	for lane := 0; lane < NumLanes; lane++ {
-		s.v1[lane] += binary.LittleEndian.Uint64(packet[8*lane:])
-		const mask32 = 0xFFFFFFFF
-		s.v0[lane] |= 0x70000001
-		mul32 := s.v0[lane] & mask32
-		binary.LittleEndian.PutUint64(mul0[8*lane:], mul32*(s.v1[lane]&mask32))
-		mul1[lane] = mul32 * (s.v1[lane] >> 32)
+	var packets = Lanes{
+		binary.LittleEndian.Uint64(packet[0:]),
+		binary.LittleEndian.Uint64(packet[8:]),
+		binary.LittleEndian.Uint64(packet[16:]),
+		binary.LittleEndian.Uint64(packet[24:]),
 	}
 
-	var merged [32]byte
-	s.ZipperMerge(mul0[:], merged[:])
+	for lane := 0; lane < NumLanes; lane++ {
+		s.v1[lane] += packets[lane]
+		s.v1[lane] += s.mul0[lane]
+		const mask32 = 0xFFFFFFFF
+		v0_32 := s.v0[lane] & mask32
+		v1_32 := s.v1[lane] & mask32
 
-	for lane := range mul1 {
-		s.v0[lane] += binary.LittleEndian.Uint64(merged[8*lane:])
-		s.v1[lane] += mul1[lane]
+		s.mul0[lane] ^= v0_32 * (s.v1[lane] >> 32)
+		s.v0[lane] += s.mul1[lane]
+		s.mul1[lane] ^= v1_32 * (s.v0[lane] >> 32)
+	}
+
+	var merged1 Lanes
+	s.ZipperMerge(&s.v1, &merged1)
+	for lane := range merged1 {
+		s.v0[lane] += merged1[lane]
+	}
+
+	var merged0 Lanes
+	s.ZipperMerge(&s.v0, &merged0)
+	for lane := range merged0 {
+		s.v1[lane] += merged0[lane]
 	}
 }
 
@@ -65,46 +81,70 @@ func (s *state) Finalize() uint64 {
 	s.PermuteAndUpdate()
 	s.PermuteAndUpdate()
 
-	return s.v0[0] + s.v1[0]
+	return s.v0[0] + s.v1[0] + s.mul0[0] + s.mul1[0]
 }
 
-func (s *state) ZipperMerge(mul0, v0 []byte) []byte {
+func (s *state) ZipperMerge(mul0, v0 *Lanes) {
+
+	var mul0b [packetSize]byte
+	binary.LittleEndian.PutUint64(mul0b[0:], mul0[0])
+	binary.LittleEndian.PutUint64(mul0b[8:], mul0[1])
+	binary.LittleEndian.PutUint64(mul0b[16:], mul0[2])
+	binary.LittleEndian.PutUint64(mul0b[24:], mul0[3])
+
+	var v0b [packetSize]byte
 
 	for half := 0; half < packetSize; half += packetSize / 2 {
-		v0[half+0] = mul0[half+3]
-		v0[half+1] = mul0[half+12]
-		v0[half+2] = mul0[half+2]
-		v0[half+3] = mul0[half+5]
-		v0[half+4] = mul0[half+14]
-		v0[half+5] = mul0[half+1]
-		v0[half+6] = mul0[half+15]
-		v0[half+7] = mul0[half+0]
-		v0[half+8] = mul0[half+11]
-		v0[half+9] = mul0[half+4]
-		v0[half+10] = mul0[half+10]
-		v0[half+11] = mul0[half+13]
-		v0[half+12] = mul0[half+9]
-		v0[half+13] = mul0[half+6]
-		v0[half+14] = mul0[half+8]
-		v0[half+15] = mul0[half+7]
+		v0b[half+0] = mul0b[half+3]
+		v0b[half+1] = mul0b[half+12]
+		v0b[half+2] = mul0b[half+2]
+		v0b[half+3] = mul0b[half+5]
+		v0b[half+4] = mul0b[half+14]
+		v0b[half+5] = mul0b[half+1]
+		v0b[half+6] = mul0b[half+15]
+		v0b[half+7] = mul0b[half+0]
+		v0b[half+8] = mul0b[half+11]
+		v0b[half+9] = mul0b[half+4]
+		v0b[half+10] = mul0b[half+10]
+		v0b[half+11] = mul0b[half+13]
+		v0b[half+12] = mul0b[half+9]
+		v0b[half+13] = mul0b[half+6]
+		v0b[half+14] = mul0b[half+8]
+		v0b[half+15] = mul0b[half+7]
 	}
 
-	return v0
+	*v0 = Lanes{
+		binary.LittleEndian.Uint64(v0b[0:]),
+		binary.LittleEndian.Uint64(v0b[8:]),
+		binary.LittleEndian.Uint64(v0b[16:]),
+		binary.LittleEndian.Uint64(v0b[24:]),
+	}
 }
 
 func rot32(x uint64) uint64 {
 	return (x >> 32) | (x << 32)
 }
 
+func (s *state) Permute(v, permuted *Lanes) {
+	permuted[0] = rot32(v[2])
+	permuted[1] = rot32(v[3])
+	permuted[2] = rot32(v[0])
+	permuted[3] = rot32(v[1])
+}
+
 func (s *state) PermuteAndUpdate() {
-	var permuted [32]byte
+	var permuted Lanes
 
-	binary.LittleEndian.PutUint64(permuted[0:], rot32(s.v0[2]))
-	binary.LittleEndian.PutUint64(permuted[8:], rot32(s.v0[3]))
-	binary.LittleEndian.PutUint64(permuted[16:], rot32(s.v0[0]))
-	binary.LittleEndian.PutUint64(permuted[24:], rot32(s.v0[1]))
+	s.Permute(&s.v0, &permuted)
 
-	s.Update(permuted[:])
+	var bytes [32]byte
+
+	binary.LittleEndian.PutUint64(bytes[0:], permuted[0])
+	binary.LittleEndian.PutUint64(bytes[8:], permuted[1])
+	binary.LittleEndian.PutUint64(bytes[16:], permuted[2])
+	binary.LittleEndian.PutUint64(bytes[24:], permuted[3])
+
+	s.Update(bytes[:])
 }
 
 func Hash(key Lanes, bytes []byte) uint64 {
