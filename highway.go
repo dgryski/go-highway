@@ -42,15 +42,8 @@ func newstate(keys Lanes) state {
 
 func (s *state) Update(packet []byte) {
 
-	var packets = Lanes{
-		binary.LittleEndian.Uint64(packet[0:]),
-		binary.LittleEndian.Uint64(packet[8:]),
-		binary.LittleEndian.Uint64(packet[16:]),
-		binary.LittleEndian.Uint64(packet[24:]),
-	}
-
 	for lane := 0; lane < NumLanes; lane++ {
-		s.v1[lane] += packets[lane]
+		s.v1[lane] += binary.LittleEndian.Uint64(packet[8*lane:])
 		s.v1[lane] += s.mul0[lane]
 		const mask32 = 0xFFFFFFFF
 		v0_32 := s.v0[lane] & mask32
@@ -61,16 +54,16 @@ func (s *state) Update(packet []byte) {
 		s.mul1[lane] ^= v1_32 * (s.v0[lane] >> 32)
 	}
 
-	var merged1 Lanes
-	s.ZipperMerge(&s.v1, &merged1)
-	for lane := range merged1 {
-		s.v0[lane] += merged1[lane]
+	var merged1 [32]byte
+	s.ZipperMerge(&s.v1, merged1[:])
+	for lane := range s.v0 {
+		s.v0[lane] += binary.LittleEndian.Uint64(merged1[8*lane:])
 	}
 
-	var merged0 Lanes
-	s.ZipperMerge(&s.v0, &merged0)
-	for lane := range merged0 {
-		s.v1[lane] += merged0[lane]
+	var merged0 [32]byte
+	s.ZipperMerge(&s.v0, merged0[:])
+	for lane := range s.v1 {
+		s.v1[lane] += binary.LittleEndian.Uint64(merged0[8*lane:])
 	}
 }
 
@@ -84,7 +77,7 @@ func (s *state) Finalize() uint64 {
 	return s.v0[0] + s.v1[0] + s.mul0[0] + s.mul1[0]
 }
 
-func (s *state) ZipperMerge(mul0, v0 *Lanes) {
+func (s *state) ZipperMerge(mul0 *Lanes, v0 []byte) {
 
 	var mul0b [packetSize]byte
 	binary.LittleEndian.PutUint64(mul0b[0:], mul0[0])
@@ -92,32 +85,23 @@ func (s *state) ZipperMerge(mul0, v0 *Lanes) {
 	binary.LittleEndian.PutUint64(mul0b[16:], mul0[2])
 	binary.LittleEndian.PutUint64(mul0b[24:], mul0[3])
 
-	var v0b [packetSize]byte
-
 	for half := 0; half < packetSize; half += packetSize / 2 {
-		v0b[half+0] = mul0b[half+3]
-		v0b[half+1] = mul0b[half+12]
-		v0b[half+2] = mul0b[half+2]
-		v0b[half+3] = mul0b[half+5]
-		v0b[half+4] = mul0b[half+14]
-		v0b[half+5] = mul0b[half+1]
-		v0b[half+6] = mul0b[half+15]
-		v0b[half+7] = mul0b[half+0]
-		v0b[half+8] = mul0b[half+11]
-		v0b[half+9] = mul0b[half+4]
-		v0b[half+10] = mul0b[half+10]
-		v0b[half+11] = mul0b[half+13]
-		v0b[half+12] = mul0b[half+9]
-		v0b[half+13] = mul0b[half+6]
-		v0b[half+14] = mul0b[half+8]
-		v0b[half+15] = mul0b[half+7]
-	}
-
-	*v0 = Lanes{
-		binary.LittleEndian.Uint64(v0b[0:]),
-		binary.LittleEndian.Uint64(v0b[8:]),
-		binary.LittleEndian.Uint64(v0b[16:]),
-		binary.LittleEndian.Uint64(v0b[24:]),
+		v0[half+0] = mul0b[half+3]
+		v0[half+1] = mul0b[half+12]
+		v0[half+2] = mul0b[half+2]
+		v0[half+3] = mul0b[half+5]
+		v0[half+4] = mul0b[half+14]
+		v0[half+5] = mul0b[half+1]
+		v0[half+6] = mul0b[half+15]
+		v0[half+7] = mul0b[half+0]
+		v0[half+8] = mul0b[half+11]
+		v0[half+9] = mul0b[half+4]
+		v0[half+10] = mul0b[half+10]
+		v0[half+11] = mul0b[half+13]
+		v0[half+12] = mul0b[half+9]
+		v0[half+13] = mul0b[half+6]
+		v0[half+14] = mul0b[half+8]
+		v0[half+15] = mul0b[half+7]
 	}
 }
 
