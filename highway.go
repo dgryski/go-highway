@@ -20,6 +20,8 @@ var (
 	init1 = Lanes{0x3bd39e10cb0ef593, 0xc0acf169b5f18a8c, 0xbe5466cf34e90c6c, 0x452821e638d01377}
 )
 
+const useSSE = false
+
 type state struct {
 	v0, v1     Lanes
 	mul0, mul1 Lanes
@@ -29,7 +31,12 @@ func newstate(keys Lanes) state {
 	var s state
 
 	var permutedKeys Lanes
-	s.Permute(&keys, &permutedKeys)
+	if useSSE {
+		newstateSSE(&s, &keys, &init0, &init1)
+		return s
+	}
+
+	permute(&keys, &permutedKeys)
 	for lane := range keys {
 		s.v0[lane] = init0[lane] ^ keys[lane]
 		s.v1[lane] = init1[lane] ^ permutedKeys[lane]
@@ -42,32 +49,40 @@ func newstate(keys Lanes) state {
 
 func (s *state) Update(packet []byte) {
 
+	if useSSE {
+		updateSSE(s, packet)
+		return
+	}
+
 	for lane := 0; lane < NumLanes; lane++ {
 		s.v1[lane] += binary.LittleEndian.Uint64(packet[8*lane:])
 		s.v1[lane] += s.mul0[lane]
 		const mask32 = 0xFFFFFFFF
 		v0_32 := s.v0[lane] & mask32
 		v1_32 := s.v1[lane] & mask32
-
 		s.mul0[lane] ^= v0_32 * (s.v1[lane] >> 32)
 		s.v0[lane] += s.mul1[lane]
 		s.mul1[lane] ^= v1_32 * (s.v0[lane] >> 32)
 	}
 
 	var merged1 [32]byte
-	s.ZipperMerge(&s.v1, merged1[:])
+	zipperMerge(&s.v1, &merged1)
 	for lane := range s.v0 {
 		s.v0[lane] += binary.LittleEndian.Uint64(merged1[8*lane:])
 	}
 
 	var merged0 [32]byte
-	s.ZipperMerge(&s.v0, merged0[:])
+	zipperMerge(&s.v0, &merged0)
 	for lane := range s.v1 {
 		s.v1[lane] += binary.LittleEndian.Uint64(merged0[8*lane:])
 	}
 }
 
 func (s *state) Finalize() uint64 {
+
+	if useSSE {
+		return finalizeSSE(s)
+	}
 
 	s.PermuteAndUpdate()
 	s.PermuteAndUpdate()
@@ -77,7 +92,7 @@ func (s *state) Finalize() uint64 {
 	return s.v0[0] + s.v1[0] + s.mul0[0] + s.mul1[0]
 }
 
-func (s *state) ZipperMerge(mul0 *Lanes, v0 []byte) {
+func zipperMerge(mul0 *Lanes, v0 *[32]byte) {
 
 	var mul0b [packetSize]byte
 	binary.LittleEndian.PutUint64(mul0b[0:], mul0[0])
@@ -109,7 +124,7 @@ func rot32(x uint64) uint64 {
 	return (x >> 32) | (x << 32)
 }
 
-func (s *state) Permute(v, permuted *Lanes) {
+func permute(v, permuted *Lanes) {
 	permuted[0] = rot32(v[2])
 	permuted[1] = rot32(v[3])
 	permuted[2] = rot32(v[0])
@@ -119,7 +134,12 @@ func (s *state) Permute(v, permuted *Lanes) {
 func (s *state) PermuteAndUpdate() {
 	var permuted Lanes
 
-	s.Permute(&s.v0, &permuted)
+	if useSSE {
+		permuteAndUpdateSSE(s)
+		return
+	}
+
+	permute(&s.v0, &permuted)
 
 	var bytes [32]byte
 
@@ -140,9 +160,14 @@ func Hash(key Lanes, bytes []byte) uint64 {
 	// Hash entire 32-byte packets.
 	remainder := size & (packetSize - 1)
 	truncatedSize := size - remainder
-	for i := 0; i < truncatedSize/8; i += NumLanes {
-		s.Update(bytes)
-		bytes = bytes[32:]
+	if useSSE {
+		updateStateSSE(&s, bytes[:truncatedSize])
+		bytes = bytes[truncatedSize:]
+	} else {
+		for i := 0; i < truncatedSize/8; i += NumLanes {
+			s.Update(bytes)
+			bytes = bytes[32:]
+		}
 	}
 
 	// Update with final 32-byte packet.

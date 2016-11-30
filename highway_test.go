@@ -1,6 +1,7 @@
 package highway
 
 import (
+	"reflect"
 	"testing"
 )
 
@@ -52,4 +53,106 @@ func TestHighway(t *testing.T) {
 			t.Errorf("Hash(..., input[:%d])=%016x, want %016x\n", i, h, tests[i])
 		}
 	}
+}
+
+func TestPermuteSSE(t *testing.T) {
+	v1 := Lanes{0x0001020304050607, 0x08090A0B0C0D0E0F, 0x1011121314151617, 0x18191A1B1C1D1E1F}
+	var p Lanes
+
+	permute(&v1, &p)
+
+	var psse Lanes
+
+	permuteSSE(&v1, &psse)
+
+	if !reflect.DeepEqual(p, psse) {
+		t.Errorf("permuteSSE")
+		t.Logf("got : %x", psse)
+		t.Logf("want: %x", p)
+	}
+}
+
+func TestZipperSSE(t *testing.T) {
+	v1 := Lanes{0x0001020304050607, 0x08090A0B0C0D0E0F, 0x1011121314151617, 0x18191A1B1C1D1E1F}
+	var p [32]byte
+
+	zipperMerge(&v1, &p)
+
+	var psse [32]byte
+
+	zipperSSE(&v1, &psse)
+
+	if !reflect.DeepEqual(p, psse) {
+		t.Errorf("zipperSSE")
+		t.Logf("got : %x", psse)
+		t.Logf("want: %x", p)
+	}
+}
+
+func TestUpdateSSE(t *testing.T) {
+
+	s := newstate(Lanes{})
+	var p [32]byte
+
+	s.Update(p[:])
+
+	s2 := newstate(Lanes{})
+
+	updateSSE(&s2, p[:])
+
+	if !reflect.DeepEqual(s, s2) {
+		t.Errorf("updateSSE")
+		t.Logf("got : %x", s2)
+		t.Logf("want: %x", s)
+	}
+}
+
+var sink uint64
+
+func BenchmarkPermute(b *testing.B) {
+
+	v1 := Lanes{0x0001020304050607, 0x08090A0B0C0D0E0F, 0x1011121314151617, 0x18191A1B1C1D1E1F}
+	var p Lanes
+
+	for i := 0; i < b.N; i++ {
+		permute(&v1, &p)
+	}
+
+	sink += p[0]
+}
+
+func BenchmarkPermuteSSE(b *testing.B) {
+
+	v1 := Lanes{0x0001020304050607, 0x08090A0B0C0D0E0F, 0x1011121314151617, 0x18191A1B1C1D1E1F}
+	var p Lanes
+
+	for i := 0; i < b.N; i++ {
+		permuteSSE(&v1, &p)
+	}
+
+	sink += p[0]
+}
+
+func BenchmarkZipper(b *testing.B) {
+
+	v1 := Lanes{0x0001020304050607, 0x08090A0B0C0D0E0F, 0x1011121314151617, 0x18191A1B1C1D1E1F}
+	var p [32]byte
+
+	for i := 0; i < b.N; i++ {
+		zipperMerge(&v1, &p)
+	}
+
+	sink += uint64(p[0])
+}
+
+func BenchmarkZipperSSE(b *testing.B) {
+
+	v1 := Lanes{0x0001020304050607, 0x08090A0B0C0D0E0F, 0x1011121314151617, 0x18191A1B1C1D1E1F}
+	var p [32]byte
+
+	for i := 0; i < b.N; i++ {
+		zipperSSE(&v1, &p)
+	}
+
+	sink += uint64(p[0])
 }
