@@ -27,15 +27,8 @@ type state struct {
 	mul0, mul1 Lanes
 }
 
-func newstate(keys Lanes) state {
-	var s state
-
+func newstate(s *state, keys Lanes) {
 	var permutedKeys Lanes
-	if useSSE {
-		newstateSSE(&s, &keys, &init0, &init1)
-		return s
-	}
-
 	permute(&keys, &permutedKeys)
 	for lane := range keys {
 		s.v0[lane] = init0[lane] ^ keys[lane]
@@ -43,17 +36,9 @@ func newstate(keys Lanes) state {
 		s.mul0[lane] = init0[lane]
 		s.mul1[lane] = init1[lane]
 	}
-
-	return s
 }
 
 func (s *state) Update(packet []byte) {
-
-	if useSSE {
-		updateSSE(s, packet)
-		return
-	}
-
 	for lane := 0; lane < NumLanes; lane++ {
 		s.v1[lane] += binary.LittleEndian.Uint64(packet[8*lane:])
 		s.v1[lane] += s.mul0[lane]
@@ -79,10 +64,6 @@ func (s *state) Update(packet []byte) {
 }
 
 func (s *state) Finalize() uint64 {
-
-	if useSSE {
-		return finalizeSSE(s)
-	}
 
 	s.PermuteAndUpdate()
 	s.PermuteAndUpdate()
@@ -134,11 +115,6 @@ func permute(v, permuted *Lanes) {
 func (s *state) PermuteAndUpdate() {
 	var permuted Lanes
 
-	if useSSE {
-		permuteAndUpdateSSE(s)
-		return
-	}
-
 	permute(&s.v0, &permuted)
 
 	var bytes [32]byte
@@ -153,17 +129,18 @@ func (s *state) PermuteAndUpdate() {
 
 func Hash(key Lanes, bytes []byte) uint64 {
 
-	s := newstate(key)
+	var s state
 
 	size := len(bytes)
-
-	// Hash entire 32-byte packets.
 	remainder := size & (packetSize - 1)
-	truncatedSize := size - remainder
+
 	if useSSE {
-		updateStateSSE(&s, bytes[:truncatedSize])
-		bytes = bytes[truncatedSize:]
+		hashSSE(&s, &key, &init0, &init1, bytes)
+		bytes = bytes[len(bytes)-remainder:]
 	} else {
+		newstate(&s, key)
+		// Hash entire 32-byte packets.
+		truncatedSize := size - remainder
 		for i := 0; i < truncatedSize/8; i += NumLanes {
 			s.Update(bytes)
 			bytes = bytes[32:]
@@ -181,6 +158,10 @@ func Hash(key Lanes, bytes []byte) uint64 {
 	var finalPacket [packetSize]byte
 	copy(finalPacket[:], bytes[:len(bytes)-remainderMod4])
 	binary.LittleEndian.PutUint32(finalPacket[packetSize-4:], packet4)
+
+	if useSSE {
+		return updateFinalizeSSE(&s, finalPacket[:])
+	}
 
 	s.Update(finalPacket[:])
 

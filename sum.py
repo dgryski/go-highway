@@ -28,34 +28,6 @@ def permute(dstlo,dsthi,srclo,srchi):
         PSHUFD(dstlo, srchi, mm_shufmask(2,3,0,1))
         PSHUFD(dsthi, srclo, mm_shufmask(2,3,0,1))
 
-def MakePermuteSSE():
-
-    vptr = Argument(ptr())
-    permuted_ptr = Argument(ptr())
-
-    with Function("permuteSSE", (vptr, permuted_ptr), target=uarch.default) as function:
-        reg_vptr = GeneralPurposeRegister64()
-        reg_permuted_ptr = GeneralPurposeRegister64()
-
-        LOAD.ARGUMENT(reg_vptr, vptr)
-        LOAD.ARGUMENT(reg_permuted_ptr, permuted_ptr)
-
-        plo, phi = XMMRegister(), XMMRegister()
-        vlo, vhi = XMMRegister(), XMMRegister()
-
-        MOVDQU(vhi, [reg_vptr+16])
-        MOVDQU(vlo, [reg_vptr])
-
-        permute(plo,phi,vlo,vhi)
-
-        MOVDQU([reg_permuted_ptr], plo)
-        MOVDQU([reg_permuted_ptr+16], phi)
-
-        RETURN()
-
-
-MakePermuteSSE()
-
 def zippermask():
     x = GeneralPurposeRegister64()
     mask = XMMRegister()
@@ -74,33 +46,6 @@ def zipper(mask,mlo,mhi,vlo,vhi):
     PSHUFB(vlo,mask)
     MOVDQA(vhi,mhi)
     PSHUFB(vhi,mask)
-
-def MakeZipperSSE():
-    mul0 = Argument(ptr())
-    v0 = Argument(ptr())
-
-    with Function("zipperSSE", (mul0, v0), target=uarch.default+isa.ssse3) as function:
-        reg_mul0 = GeneralPurposeRegister64()
-        reg_v0 = GeneralPurposeRegister64()
-
-        LOAD.ARGUMENT(reg_mul0, mul0)
-        LOAD.ARGUMENT(reg_v0, v0)
-
-        m0lo, m0hi = XMMRegister(), XMMRegister()
-        vlo, vhi = XMMRegister(), XMMRegister()
-
-        MOVDQU(m0lo, [reg_mul0])
-        MOVDQU(m0hi, [reg_mul0+16])
-
-        mask = zippermask()
-        zipper(mask,m0lo,m0hi,vlo,vhi)
-
-        MOVDQU([reg_v0], vlo)
-        MOVDQU([reg_v0+16], vhi)
-
-        RETURN()
-
-MakeZipperSSE()
 
 def update(plo,phi, state):
         PADDQ(state.v1lo, plo)
@@ -156,123 +101,13 @@ def update(plo,phi, state):
         PADDQ(state.v1hi, dsthi)
 
 
-def MakeUpdateSSE():
-
-    sptr = Argument(ptr())
-    p_base = Argument(ptr())
-    p_len = Argument(int64_t)
-    p_cap = Argument(int64_t)
-
-    with Function("updateSSE", (sptr, p_base, p_len, p_cap), target=uarch.default + isa.ssse3) as function:
-        reg_sptr = GeneralPurposeRegister64()
-        reg_p = GeneralPurposeRegister64()
-
-        LOAD.ARGUMENT(reg_sptr, sptr)
-        LOAD.ARGUMENT(reg_p, p_base)
-
-        state = State()
-
-        state.load(reg_sptr)
-
-        reg_plo = XMMRegister()
-        reg_phi = XMMRegister()
-
-        MOVDQU(reg_plo, [reg_p])
-        MOVDQU(reg_phi, [reg_p+16])
-
-        update(reg_plo, reg_phi, state)
-
-        state.store(reg_sptr)
-
-        RETURN()
-
-MakeUpdateSSE()
-
-def MakeUpdateStateSSE():
-
-    sptr = Argument(ptr())
-    p_base = Argument(ptr())
-    p_len = Argument(int64_t)
-    p_cap = Argument(int64_t)
-
-    with Function("updateStateSSE", (sptr, p_base, p_len, p_cap), target=uarch.default + isa.ssse3) as function:
-        reg_sptr = GeneralPurposeRegister64()
-        reg_p = GeneralPurposeRegister64()
-        reg_p_len = GeneralPurposeRegister64()
-
-        LOAD.ARGUMENT(reg_sptr, sptr)
-        LOAD.ARGUMENT(reg_p, p_base)
-        LOAD.ARGUMENT(reg_p_len, p_len)
-
-        state = State()
-
-        state.load(reg_sptr)
-
-        reg_plo = XMMRegister()
-        reg_phi = XMMRegister()
-
-        loop = Loop()
-        CMP(reg_p_len, 0)
-        JE(loop.end)
-        with loop:
-
-            MOVDQU(reg_plo, [reg_p])
-            MOVDQU(reg_phi, [reg_p+16])
-
-            update(reg_plo, reg_phi, state)
-
-            ADD(reg_p, 32)
-            SUB(reg_p_len, 32)
-            CMP(reg_p_len, 0)
-            JNE(loop.begin)
-
-
-        state.store(reg_sptr)
-
-        RETURN()
-
-MakeUpdateStateSSE()
-
 def permuteAndUpdate(state):
     plo, phi = XMMRegister(), XMMRegister()
 
     permute(plo,phi,state.v0lo,state.v0hi)
     update(plo,phi,state)
 
-def MakePermuteAndUpdate():
-
-    sptr = Argument(ptr())
-
-    with Function("permuteAndUpdateSSE", (sptr,), target=uarch.default + isa.ssse3) as function:
-        reg_sptr = GeneralPurposeRegister64()
-
-        LOAD.ARGUMENT(reg_sptr, sptr)
-
-        state = State()
-
-        state.load(reg_sptr)
-
-        permuteAndUpdate(state)
-
-        state.store(reg_sptr)
-
-        RETURN()
-
-MakePermuteAndUpdate()
-
-def MakeFinalize():
-
-    sptr = Argument(ptr())
-
-    with Function("finalizeSSE", (sptr,), uint64_t, target=uarch.default + isa.ssse3) as function:
-        reg_sptr = GeneralPurposeRegister64()
-
-        LOAD.ARGUMENT(reg_sptr, sptr)
-
-        state = State()
-
-        state.load(reg_sptr)
-
+def finalize(state):
         c = GeneralPurposeRegister64()
         MOV(c, 4)
         with Loop() as loop:
@@ -289,6 +124,196 @@ def MakeFinalize():
 
         MOVQ(ret, state.v0lo)
 
+        return ret
+
+def MakeUpdateFinalize():
+
+    sptr = Argument(ptr())
+    p_base = Argument(ptr())
+    p_len = Argument(int64_t)
+    p_cap = Argument(int64_t)
+
+    with Function("updateFinalizeSSE", (sptr,p_base,p_len,p_cap), uint64_t, target=uarch.default + isa.ssse3) as function:
+        reg_sptr = GeneralPurposeRegister64()
+        reg_p = GeneralPurposeRegister64()
+
+        LOAD.ARGUMENT(reg_sptr, sptr)
+        LOAD.ARGUMENT(reg_p, p_base)
+
+        state = State()
+
+        state.load(reg_sptr)
+
+        reg_plo, reg_phi = XMMRegister(), XMMRegister()
+
+        MOVDQU(reg_plo, [reg_p])
+        MOVDQU(reg_phi, [reg_p+16])
+
+        update(reg_plo, reg_phi, state)
+
+        ret = finalize(state)
+
         RETURN(ret)
 
-MakeFinalize()
+MakeUpdateFinalize()
+
+def newstate(reg_keys,reg_init0, reg_init1):
+    state = State()
+
+    MOVDQU(state.v0lo, [reg_keys])
+    MOVDQU(state.v0hi, [reg_keys+16])
+    MOVDQU(state.mul0lo, [reg_init0])
+    MOVDQU(state.mul0hi, [reg_init0+16])
+    MOVDQU(state.mul1lo, [reg_init1])
+    MOVDQU(state.mul1hi, [reg_init1+16])
+
+    permute(state.v1lo, state.v1hi, state.v0lo, state.v0hi)
+
+    PXOR(state.v0lo, state.mul0lo)
+    PXOR(state.v0hi, state.mul0hi)
+    PXOR(state.v1lo, state.mul1lo)
+    PXOR(state.v1hi, state.mul1hi)
+
+    return state
+
+def memcpy32(xmm0,xmm1,p,l):
+
+    b = GeneralPurposeRegister64()
+    w = GeneralPurposeRegister64()
+    MOV(w, 1122334455)
+    MOVDQU([w], xmm0)
+    MOVDQU([w+16], xmm0)
+
+    eight = Loop()
+    CMP(l, 8)
+    JL(eight.end)
+    with eight:
+        MOV(b, [p])
+        MOV([w], b)
+        ADD(w, 8)
+        SUB(l, 8)
+        CMP(l, 8)
+        JGE(eight.begin)
+
+    # no support for jump tables
+    labels = [Label("memcpy_sw%d" % i) for i in range(0, 8)]
+    for i in range(0,7):
+        CMP(l, i)
+        JE(labels[i])
+    char = GeneralPurposeRegister64()
+    for i in range(7,0,-1):
+        LABEL(labels[i])
+        MOVZX(char, byte[p+i-1])
+        SHL(char, (i-1)*8)
+        OR(b, char)
+    LABEL(labels[0])
+
+    MOV([w], b)
+
+    MOV(w, 1122334455)
+    MOVDQA(xmm0, [w])
+    MOVDQA(xmm1, [w+16])
+
+def MakeHash():
+
+    sptr = Argument(ptr())
+    keys = Argument(ptr())
+    init0 = Argument(ptr())
+    init1 = Argument(ptr())
+    p_base = Argument(ptr())
+    p_len = Argument(int64_t)
+    p_cap = Argument(int64_t)
+
+    with Function("hashSSE", (sptr,keys,init0,init1,p_base,p_len,p_cap), uint64_t, target=uarch.default + isa.ssse3) as function:
+
+        reg_keys = GeneralPurposeRegister64()
+        reg_init0 = GeneralPurposeRegister64()
+        reg_init1 = GeneralPurposeRegister64()
+
+        LOAD.ARGUMENT(reg_keys, keys)
+        LOAD.ARGUMENT(reg_init0, init0)
+        LOAD.ARGUMENT(reg_init1, init1)
+        state = newstate(reg_keys, reg_init0, reg_init1)
+
+        reg_p = GeneralPurposeRegister64()
+        reg_p_len = GeneralPurposeRegister64()
+        LOAD.ARGUMENT(reg_p, p_base)
+        LOAD.ARGUMENT(reg_p_len, p_len)
+
+        reg_plo = XMMRegister()
+        reg_phi = XMMRegister()
+
+        loop = Loop()
+        CMP(reg_p_len, 32)
+        JL(loop.end)
+        with loop:
+            MOVDQU(reg_plo, [reg_p])
+            MOVDQU(reg_phi, [reg_p+16])
+
+            update(reg_plo, reg_phi, state)
+
+            ADD(reg_p, 32)
+            SUB(reg_p_len, 32)
+            CMP(reg_p_len, 32)
+            JGE(loop.begin)
+
+        ###
+
+        reg_sptr = GeneralPurposeRegister64()
+        LOAD.ARGUMENT(reg_sptr, sptr)
+        state.store(reg_sptr)
+        RETURN(reg_p_len)
+
+        # TODO(dgryski): local variables and goabi don't play nicely together yet
+        if False:
+            # reg_p_len is now remainder
+
+            # remainderMod4 := remainder & 3
+            reg_remMod4 = GeneralPurposeRegister64()
+            MOV(reg_remMod4, reg_p_len)
+            AND(reg_remMod4, 3)
+
+            # packet4 := uint32(size) << 24
+            reg_size = GeneralPurposeRegister64()
+            LOAD.ARGUMENT(reg_size, p_len)
+            SHL(reg_size, 24)
+            reg_packet4 = GeneralPurposeRegister32()
+            MOV(reg_packet4, reg_size.as_dword)
+
+            # finalBytes := bytes[len(bytes)-remainderMod4:]
+            finalBytes = GeneralPurposeRegister64()
+            MOV(finalBytes, reg_p)
+            ADD(finalBytes, reg_p_len)
+            SUB(finalBytes, reg_remMod4)
+
+            #for i := 0; i < remainderMod4; i++ {
+            #	packet4 += uint32(finalBytes[i]) << uint(i*8)
+            #}
+            b = GeneralPurposeRegister32()
+            done = Label()
+            for i in range(4):
+                CMP(reg_remMod4, 0)
+                JZ(done)
+                MOVZX(b, byte[finalBytes+i])
+                SHL(b, i*8)
+                ADD(reg_packet4, b)
+                DEC(reg_remMod4)
+            LABEL(done)
+
+            # copy(finalPacket[:], bytes[:len(bytes)-remainderMod4])
+            PXOR(reg_plo, reg_plo)
+            PXOR(reg_phi, reg_phi)
+
+            reg_copylen = GeneralPurposeRegister64()
+
+            MOV(reg_copylen, reg_p_len)
+            AND(reg_copylen, 3)
+            NEG(reg_copylen)
+            ADD(reg_copylen, reg_p_len)
+
+            memcpy32(reg_plo,reg_phi,reg_p,reg_copylen)
+
+            update(reg_plo, reg_phi, state)
+            ret = finalize(state)
+            RETURN(ret)
+MakeHash()
