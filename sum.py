@@ -126,37 +126,6 @@ def finalize(state):
 
         return ret
 
-def MakeUpdateFinalize():
-
-    sptr = Argument(ptr())
-    p_base = Argument(ptr())
-    p_len = Argument(int64_t)
-    p_cap = Argument(int64_t)
-
-    with Function("updateFinalizeSSE", (sptr,p_base,p_len,p_cap), uint64_t, target=uarch.default + isa.ssse3) as function:
-        reg_sptr = GeneralPurposeRegister64()
-        reg_p = GeneralPurposeRegister64()
-
-        LOAD.ARGUMENT(reg_sptr, sptr)
-        LOAD.ARGUMENT(reg_p, p_base)
-
-        state = State()
-
-        state.load(reg_sptr)
-
-        reg_plo, reg_phi = XMMRegister(), XMMRegister()
-
-        MOVDQU(reg_plo, [reg_p])
-        MOVDQU(reg_phi, [reg_p+16])
-
-        update(reg_plo, reg_phi, state)
-
-        ret = finalize(state)
-
-        RETURN(ret)
-
-MakeUpdateFinalize()
-
 def newstate(reg_keys,reg_init0, reg_init1):
     state = State()
 
@@ -176,27 +145,45 @@ def newstate(reg_keys,reg_init0, reg_init1):
 
     return state
 
-def memcpy32(xmm0,xmm1,p,l):
+def memcpy32(x0,x1,p,l):
+
+    fin = Label("memcpy32_fin")
+    CMP(l, 0)
+    JE(fin)
+
+    skipLoad16 = Label("memcpy32_skipLoad16")
+    CMP(l, 16)
+    JL(skipLoad16)
+    MOVDQU(x0, [p])
+    ADD(p, 16)
+    SUB(l, 16)
+    memcpy16(x1,p,l)
+    JMP(fin)
+    LABEL(skipLoad16)
+    memcpy16(x0,p,l)
+
+    LABEL(fin)
+
+
+def memcpy16(xmm0,p,l):
 
     b = GeneralPurposeRegister64()
-    w = GeneralPurposeRegister64()
-    MOV(w, 1122334455)
-    MOVDQU([w], xmm0)
-    MOVDQU([w+16], xmm0)
+    offs = GeneralPurposeRegister64()
+    XOR(offs, offs)
 
-    eight = Loop()
+    skip8 = Label()
     CMP(l, 8)
-    JL(eight.end)
-    with eight:
-        MOV(b, [p])
-        MOV([w], b)
-        ADD(w, 8)
-        SUB(l, 8)
-        CMP(l, 8)
-        JGE(eight.begin)
+    JL(skip8)
+    MOV(b, [p])
+    MOVQ(xmm0, b)
+    SUB(l, 8)
+    ADD(p, 8)
+    MOV(offs, 1)
+    LABEL(skip8)
 
+    XOR(b,b)
     # no support for jump tables
-    labels = [Label("memcpy_sw%d" % i) for i in range(0, 8)]
+    labels = [Label() for i in range(0, 8)]
     for i in range(0,7):
         CMP(l, i)
         JE(labels[i])
@@ -206,17 +193,21 @@ def memcpy32(xmm0,xmm1,p,l):
         MOVZX(char, byte[p+i-1])
         SHL(char, (i-1)*8)
         OR(b, char)
+
+    fin16 = Label()
+    insert1 = Label()
+    CMP(offs, 1)
+    JZ(insert1)
+    PINSRQ(xmm0,b,0)
+    JMP(fin16)
+    LABEL(insert1)
+    PINSRQ(xmm0,b,1)
+    LABEL(fin16)
     LABEL(labels[0])
 
-    MOV([w], b)
-
-    MOV(w, 1122334455)
-    MOVDQA(xmm0, [w])
-    MOVDQA(xmm1, [w+16])
 
 def MakeHash():
 
-    sptr = Argument(ptr())
     keys = Argument(ptr())
     init0 = Argument(ptr())
     init1 = Argument(ptr())
@@ -224,7 +215,7 @@ def MakeHash():
     p_len = Argument(int64_t)
     p_cap = Argument(int64_t)
 
-    with Function("hashSSE", (sptr,keys,init0,init1,p_base,p_len,p_cap), uint64_t, target=uarch.default + isa.ssse3) as function:
+    with Function("hashSSE", (keys,init0,init1,p_base,p_len,p_cap), uint64_t, target=uarch.default + isa.sse4_1) as function:
 
         reg_keys = GeneralPurposeRegister64()
         reg_init0 = GeneralPurposeRegister64()
@@ -259,61 +250,57 @@ def MakeHash():
 
         ###
 
-        reg_sptr = GeneralPurposeRegister64()
-        LOAD.ARGUMENT(reg_sptr, sptr)
-        state.store(reg_sptr)
-        RETURN(reg_p_len)
+        # reg_p_len is now remainder
 
-        # TODO(dgryski): local variables and goabi don't play nicely together yet
-        if False:
-            # reg_p_len is now remainder
+        # remainderMod4 := remainder & 3
+        reg_remMod4 = GeneralPurposeRegister64()
+        MOV(reg_remMod4, reg_p_len)
+        AND(reg_remMod4, 3)
 
-            # remainderMod4 := remainder & 3
-            reg_remMod4 = GeneralPurposeRegister64()
-            MOV(reg_remMod4, reg_p_len)
-            AND(reg_remMod4, 3)
+        # packet4 := uint32(size) << 24
+        reg_size = GeneralPurposeRegister64()
+        LOAD.ARGUMENT(reg_size, p_len)
+        SHL(reg_size, 24)
+        reg_packet4 = GeneralPurposeRegister32()
+        MOV(reg_packet4, reg_size.as_dword)
 
-            # packet4 := uint32(size) << 24
-            reg_size = GeneralPurposeRegister64()
-            LOAD.ARGUMENT(reg_size, p_len)
-            SHL(reg_size, 24)
-            reg_packet4 = GeneralPurposeRegister32()
-            MOV(reg_packet4, reg_size.as_dword)
+        # finalBytes := bytes[len(bytes)-remainderMod4:]
+        finalBytes = GeneralPurposeRegister64()
+        MOV(finalBytes, reg_p)
+        ADD(finalBytes, reg_p_len)
+        SUB(finalBytes, reg_remMod4)
 
-            # finalBytes := bytes[len(bytes)-remainderMod4:]
-            finalBytes = GeneralPurposeRegister64()
-            MOV(finalBytes, reg_p)
-            ADD(finalBytes, reg_p_len)
-            SUB(finalBytes, reg_remMod4)
+        #for i := 0; i < remainderMod4; i++ {
+        #	packet4 += uint32(finalBytes[i]) << uint(i*8)
+        #}
+        b = GeneralPurposeRegister32()
+        done = Label()
+        for i in range(4):
+            CMP(reg_remMod4, 0)
+            JZ(done)
+            MOVZX(b, byte[finalBytes+i])
+            SHL(b, i*8)
+            ADD(reg_packet4, b)
+            DEC(reg_remMod4)
+        LABEL(done)
 
-            #for i := 0; i < remainderMod4; i++ {
-            #	packet4 += uint32(finalBytes[i]) << uint(i*8)
-            #}
-            b = GeneralPurposeRegister32()
-            done = Label()
-            for i in range(4):
-                CMP(reg_remMod4, 0)
-                JZ(done)
-                MOVZX(b, byte[finalBytes+i])
-                SHL(b, i*8)
-                ADD(reg_packet4, b)
-                DEC(reg_remMod4)
-            LABEL(done)
+        # copy(finalPacket[:], bytes[:len(bytes)-remainderMod4])
+        PXOR(reg_plo, reg_plo)
+        PXOR(reg_phi, reg_phi)
 
-            # copy(finalPacket[:], bytes[:len(bytes)-remainderMod4])
-            PXOR(reg_plo, reg_plo)
-            PXOR(reg_phi, reg_phi)
+        reg_copylen = GeneralPurposeRegister64()
 
-            reg_copylen = GeneralPurposeRegister64()
+        MOV(reg_copylen, reg_p_len)
+        AND(reg_copylen, 3)
+        NEG(reg_copylen)
+        ADD(reg_copylen, reg_p_len)
 
-            MOV(reg_copylen, reg_p_len)
-            AND(reg_copylen, 3)
-            NEG(reg_copylen)
-            ADD(reg_copylen, reg_p_len)
+        memcpy32(reg_plo, reg_phi, reg_p, reg_copylen)
 
-            memcpy32(reg_plo,reg_phi,reg_p,reg_copylen)
+	# binary.LittleEndian.PutUint32(finalPacket[packetSize-4:], packet4)
+        PINSRD(reg_phi, reg_packet4, 3)
 
-            update(reg_plo, reg_phi, state)
-            ret = finalize(state)
-            RETURN(ret)
+        update(reg_plo, reg_phi, state)
+        ret = finalize(state)
+        RETURN(ret)
 MakeHash()

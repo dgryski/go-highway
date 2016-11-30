@@ -129,22 +129,21 @@ func (s *state) PermuteAndUpdate() {
 
 func Hash(key Lanes, bytes []byte) uint64 {
 
+	if useSSE {
+		return hashSSE(&key, &init0, &init1, bytes)
+	}
+
 	var s state
 
 	size := len(bytes)
 	remainder := size & (packetSize - 1)
 
-	if useSSE {
-		hashSSE(&s, &key, &init0, &init1, bytes)
-		bytes = bytes[len(bytes)-remainder:]
-	} else {
-		newstate(&s, key)
-		// Hash entire 32-byte packets.
-		truncatedSize := size - remainder
-		for i := 0; i < truncatedSize/8; i += NumLanes {
-			s.Update(bytes)
-			bytes = bytes[32:]
-		}
+	newstate(&s, key)
+	// Hash entire 32-byte packets.
+	truncatedSize := size - remainder
+	for i := 0; i < truncatedSize/8; i += NumLanes {
+		s.Update(bytes)
+		bytes = bytes[32:]
 	}
 
 	// Update with final 32-byte packet.
@@ -158,10 +157,6 @@ func Hash(key Lanes, bytes []byte) uint64 {
 	var finalPacket [packetSize]byte
 	copy(finalPacket[:], bytes[:len(bytes)-remainderMod4])
 	binary.LittleEndian.PutUint32(finalPacket[packetSize-4:], packet4)
-
-	if useSSE {
-		return updateFinalizeSSE(&s, finalPacket[:])
-	}
 
 	s.Update(finalPacket[:])
 
