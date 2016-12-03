@@ -1,5 +1,6 @@
 import peachpy.x86_64
 
+
 class State:
     def __init__(self):
         self.v0lo = XMMRegister()
@@ -11,22 +12,31 @@ class State:
         self.mul1lo = XMMRegister()
         self.mul1hi = XMMRegister()
 
-    def load(self,ptr):
+    def load(self, ptr):
         # load state into xmm registers
-        for i, r in enumerate([self.v0lo, self.v0hi, self.v1lo, self.v1hi, self.mul0lo, self.mul0hi, self.mul1lo, self.mul1hi]):
-            MOVDQU(r, [ptr+i*r.size])
+        for i, r in enumerate([
+                self.v0lo, self.v0hi, self.v1lo, self.v1hi, self.mul0lo,
+                self.mul0hi, self.mul1lo, self.mul1hi
+        ]):
+            MOVDQU(r, [ptr + i * r.size])
 
-
-    def store(self,ptr):
+    def store(self, ptr):
         # load state into xmm registers
-        for i, r in enumerate([self.v0lo, self.v0hi, self.v1lo, self.v1hi, self.mul0lo, self.mul0hi, self.mul1lo, self.mul1hi]):
-            MOVDQU([ptr+i*r.size], r)
+        for i, r in enumerate([
+                self.v0lo, self.v0hi, self.v1lo, self.v1hi, self.mul0lo,
+                self.mul0hi, self.mul1lo, self.mul1hi
+        ]):
+            MOVDQU([ptr + i * r.size], r)
 
-def mm_shufmask(a,b,c,d): return (a << 6) | (b << 4) | (c << 2) | d
 
-def permute(dstlo,dsthi,srclo,srchi):
-        PSHUFD(dstlo, srchi, mm_shufmask(2,3,0,1))
-        PSHUFD(dsthi, srclo, mm_shufmask(2,3,0,1))
+def mm_shufmask(a, b, c, d):
+    return (a << 6) | (b << 4) | (c << 2) | d
+
+
+def permute(dstlo, dsthi, srclo, srchi):
+    PSHUFD(dstlo, srchi, mm_shufmask(2, 3, 0, 1))
+    PSHUFD(dsthi, srclo, mm_shufmask(2, 3, 0, 1))
+
 
 def zippermask():
     x = GeneralPurposeRegister64()
@@ -41,100 +51,104 @@ def zippermask():
 
     return mask
 
-def zipper(mask,mlo,mhi,vlo,vhi):
-    MOVDQA(vlo,mlo)
-    PSHUFB(vlo,mask)
-    MOVDQA(vhi,mhi)
-    PSHUFB(vhi,mask)
 
-def update(plo,phi, state):
-        PADDQ(state.v1lo, plo)
-        PADDQ(state.v1hi, phi)
-        PADDQ(state.v1lo, state.mul0lo)
-        PADDQ(state.v1hi, state.mul0hi)
+def zipper(mask, mlo, mhi, vlo, vhi):
+    MOVDQA(vlo, mlo)
+    PSHUFB(vlo, mask)
+    MOVDQA(vhi, mhi)
+    PSHUFB(vhi, mask)
 
-        dstlo = XMMRegister()
-        dsthi = XMMRegister()
-        srclo = XMMRegister()
-        srchi = XMMRegister()
 
-        MOVDQA(srclo, state.v0lo)
-        MOVDQA(srchi, state.v0hi)
-        MOVDQA(dstlo, state.v1lo)
-        MOVDQA(dsthi, state.v1hi)
-        PSRLQ(dstlo, 32)
-        PSRLQ(dsthi, 32)
+def update(plo, phi, state):
+    PADDQ(state.v1lo, plo)
+    PADDQ(state.v1hi, phi)
+    PADDQ(state.v1lo, state.mul0lo)
+    PADDQ(state.v1hi, state.mul0hi)
 
-        PMULUDQ(dstlo, srclo)
-        PMULUDQ(dsthi, srchi)
-        PXOR(state.mul0lo, dstlo)
-        PXOR(state.mul0hi, dsthi)
+    dstlo = XMMRegister()
+    dsthi = XMMRegister()
+    srclo = XMMRegister()
+    srchi = XMMRegister()
 
-        ###
+    MOVDQA(srclo, state.v0lo)
+    MOVDQA(srchi, state.v0hi)
+    MOVDQA(dstlo, state.v1lo)
+    MOVDQA(dsthi, state.v1hi)
+    PSRLQ(dstlo, 32)
+    PSRLQ(dsthi, 32)
 
-        PADDQ(state.v0lo, state.mul1lo)
-        PADDQ(state.v0hi, state.mul1hi)
+    PMULUDQ(dstlo, srclo)
+    PMULUDQ(dsthi, srchi)
+    PXOR(state.mul0lo, dstlo)
+    PXOR(state.mul0hi, dsthi)
 
-        ###
+    ###
 
-        MOVDQA(srclo, state.v1lo)
-        MOVDQA(srchi, state.v1hi)
-        MOVDQA(dstlo, state.v0lo)
-        MOVDQA(dsthi, state.v0hi)
-        PSRLQ(dstlo, 32)
-        PSRLQ(dsthi, 32)
+    PADDQ(state.v0lo, state.mul1lo)
+    PADDQ(state.v0hi, state.mul1hi)
 
-        PMULUDQ(dstlo, srclo)
-        PMULUDQ(dsthi, srchi)
-        PXOR(state.mul1lo, dstlo)
-        PXOR(state.mul1hi, dsthi)
+    ###
 
-        ######
+    MOVDQA(srclo, state.v1lo)
+    MOVDQA(srchi, state.v1hi)
+    MOVDQA(dstlo, state.v0lo)
+    MOVDQA(dsthi, state.v0hi)
+    PSRLQ(dstlo, 32)
+    PSRLQ(dsthi, 32)
 
-        mask = zippermask()
-        zipper(mask, state.v1lo, state.v1hi, dstlo, dsthi)
-        PADDQ(state.v0lo, dstlo)
-        PADDQ(state.v0hi, dsthi)
+    PMULUDQ(dstlo, srclo)
+    PMULUDQ(dsthi, srchi)
+    PXOR(state.mul1lo, dstlo)
+    PXOR(state.mul1hi, dsthi)
 
-        zipper(mask, state.v0lo, state.v0hi, dstlo, dsthi)
-        PADDQ(state.v1lo, dstlo)
-        PADDQ(state.v1hi, dsthi)
+    ######
+
+    mask = zippermask()
+    zipper(mask, state.v1lo, state.v1hi, dstlo, dsthi)
+    PADDQ(state.v0lo, dstlo)
+    PADDQ(state.v0hi, dsthi)
+
+    zipper(mask, state.v0lo, state.v0hi, dstlo, dsthi)
+    PADDQ(state.v1lo, dstlo)
+    PADDQ(state.v1hi, dsthi)
 
 
 def permuteAndUpdate(state):
     plo, phi = XMMRegister(), XMMRegister()
 
-    permute(plo,phi,state.v0lo,state.v0hi)
-    update(plo,phi,state)
+    permute(plo, phi, state.v0lo, state.v0hi)
+    update(plo, phi, state)
+
 
 def finalize(state):
-        c = GeneralPurposeRegister64()
-        MOV(c, 4)
-        with Loop() as loop:
-            permuteAndUpdate(state)
-            DEC(c)
-            JNZ(loop.begin)
+    c = GeneralPurposeRegister64()
+    MOV(c, 4)
+    with Loop() as loop:
+        permuteAndUpdate(state)
+        DEC(c)
+        JNZ(loop.begin)
 
-        PADDQ(state.v0lo, state.v1lo)
-        PADDQ(state.mul0lo, state.mul1lo)
+    PADDQ(state.v0lo, state.v1lo)
+    PADDQ(state.mul0lo, state.mul1lo)
 
-        PADDQ(state.v0lo, state.mul0lo)
+    PADDQ(state.v0lo, state.mul0lo)
 
-        ret = GeneralPurposeRegister64()
+    ret = GeneralPurposeRegister64()
 
-        MOVQ(ret, state.v0lo)
+    MOVQ(ret, state.v0lo)
 
-        return ret
+    return ret
 
-def newstate(reg_keys,reg_init0, reg_init1):
+
+def newstate(reg_keys, reg_init0, reg_init1):
     state = State()
 
     MOVDQU(state.v0lo, [reg_keys])
-    MOVDQU(state.v0hi, [reg_keys+16])
+    MOVDQU(state.v0hi, [reg_keys + 16])
     MOVDQU(state.mul0lo, [reg_init0])
-    MOVDQU(state.mul0hi, [reg_init0+16])
+    MOVDQU(state.mul0hi, [reg_init0 + 16])
     MOVDQU(state.mul1lo, [reg_init1])
-    MOVDQU(state.mul1hi, [reg_init1+16])
+    MOVDQU(state.mul1hi, [reg_init1 + 16])
 
     permute(state.v1lo, state.v1hi, state.v0lo, state.v0hi)
 
@@ -145,7 +159,8 @@ def newstate(reg_keys,reg_init0, reg_init1):
 
     return state
 
-def memcpy32(x0,x1,p,l):
+
+def memcpy32(x0, x1, p, l):
 
     fin = Label("memcpy32_fin")
     CMP(l, 0)
@@ -157,15 +172,15 @@ def memcpy32(x0,x1,p,l):
     MOVDQU(x0, [p])
     ADD(p, 16)
     SUB(l, 16)
-    memcpy16(x1,p,l)
+    memcpy16(x1, p, l)
     JMP(fin)
     LABEL(skipLoad16)
-    memcpy16(x0,p,l)
+    memcpy16(x0, p, l)
 
     LABEL(fin)
 
 
-def memcpy16(xmm0,p,l):
+def memcpy16(xmm0, p, l):
 
     b = GeneralPurposeRegister64()
     offs = GeneralPurposeRegister64()
@@ -181,27 +196,27 @@ def memcpy16(xmm0,p,l):
     MOV(offs, 1)
     LABEL(skip8)
 
-    XOR(b,b)
+    XOR(b, b)
     # no support for jump tables
     labels = [Label() for i in range(0, 8)]
-    for i in range(0,7):
+    for i in range(0, 7):
         CMP(l, i)
         JE(labels[i])
     char = GeneralPurposeRegister64()
-    for i in range(7,0,-1):
+    for i in range(7, 0, -1):
         LABEL(labels[i])
-        MOVZX(char, byte[p+i-1])
-        SHL(char, (i-1)*8)
+        MOVZX(char, byte[p + i - 1])
+        SHL(char, (i - 1) * 8)
         OR(b, char)
 
     fin16 = Label()
     insert1 = Label()
     CMP(offs, 1)
     JZ(insert1)
-    PINSRQ(xmm0,b,0)
+    PINSRQ(xmm0, b, 0)
     JMP(fin16)
     LABEL(insert1)
-    PINSRQ(xmm0,b,1)
+    PINSRQ(xmm0, b, 1)
     LABEL(fin16)
     LABEL(labels[0])
 
@@ -215,7 +230,10 @@ def MakeHash():
     p_len = Argument(int64_t)
     p_cap = Argument(int64_t)
 
-    with Function("hashSSE", (keys,init0,init1,p_base,p_len,p_cap), uint64_t, target=uarch.default + isa.sse4_1) as function:
+    with Function(
+            "hashSSE", (keys, init0, init1, p_base, p_len, p_cap),
+            uint64_t,
+            target=uarch.default + isa.sse4_1) as function:
 
         reg_keys = GeneralPurposeRegister64()
         reg_init0 = GeneralPurposeRegister64()
@@ -239,7 +257,7 @@ def MakeHash():
         JL(loop.end)
         with loop:
             MOVDQU(reg_plo, [reg_p])
-            MOVDQU(reg_phi, [reg_p+16])
+            MOVDQU(reg_phi, [reg_p + 16])
 
             update(reg_plo, reg_phi, state)
 
@@ -278,8 +296,8 @@ def MakeHash():
         for i in range(4):
             CMP(reg_remMod4, 0)
             JZ(done)
-            MOVZX(b, byte[finalBytes+i])
-            SHL(b, i*8)
+            MOVZX(b, byte[finalBytes + i])
+            SHL(b, i * 8)
             ADD(reg_packet4, b)
             DEC(reg_remMod4)
         LABEL(done)
@@ -297,10 +315,12 @@ def MakeHash():
 
         memcpy32(reg_plo, reg_phi, reg_p, reg_copylen)
 
-	# binary.LittleEndian.PutUint32(finalPacket[packetSize-4:], packet4)
+        # binary.LittleEndian.PutUint32(finalPacket[packetSize-4:], packet4)
         PINSRD(reg_phi, reg_packet4, 3)
 
         update(reg_plo, reg_phi, state)
         ret = finalize(state)
         RETURN(ret)
+
+
 MakeHash()
