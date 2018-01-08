@@ -31,7 +31,7 @@ type state struct {
 
 func newstate(s *state, keys Lanes) {
 	var permutedKeys Lanes
-	permute(&keys, &permutedKeys)
+	rotate64by32(&keys, &permutedKeys)
 	for lane := range keys {
 		s.v0[lane] = init0[lane] ^ keys[lane]
 		s.v1[lane] = init1[lane] ^ permutedKeys[lane]
@@ -45,24 +45,17 @@ func (s *state) Update(packet []byte) {
 		s.v1[lane] += binary.LittleEndian.Uint64(packet[8*lane:])
 		s.v1[lane] += s.mul0[lane]
 		const mask32 = 0xFFFFFFFF
-		v0_32 := s.v0[lane] & mask32
 		v1_32 := s.v1[lane] & mask32
-		s.mul0[lane] ^= v0_32 * (s.v1[lane] >> 32)
+		s.mul0[lane] ^= v1_32 * (s.v0[lane] >> 32)
 		s.v0[lane] += s.mul1[lane]
-		s.mul1[lane] ^= v1_32 * (s.v0[lane] >> 32)
+		v0_32 := s.v0[lane] & mask32
+		s.mul1[lane] ^= v0_32 * (s.v1[lane] >> 32)
 	}
 
-	var merged1 [32]byte
-	zipperMerge(&s.v1, &merged1)
-	for lane := range s.v0 {
-		s.v0[lane] += binary.LittleEndian.Uint64(merged1[8*lane:])
-	}
-
-	var merged0 [32]byte
-	zipperMerge(&s.v0, &merged0)
-	for lane := range s.v1 {
-		s.v1[lane] += binary.LittleEndian.Uint64(merged0[8*lane:])
-	}
+	zipperMergeAndAdd(s.v1[1], s.v1[0], &s.v0[1], &s.v0[0])
+	zipperMergeAndAdd(s.v1[3], s.v1[2], &s.v0[3], &s.v0[2])
+	zipperMergeAndAdd(s.v0[1], s.v0[0], &s.v1[1], &s.v1[0])
+	zipperMergeAndAdd(s.v0[3], s.v0[2], &s.v1[3], &s.v1[2])
 }
 
 func (s *state) Finalize() uint64 {
@@ -75,36 +68,35 @@ func (s *state) Finalize() uint64 {
 	return s.v0[0] + s.v1[0] + s.mul0[0] + s.mul1[0]
 }
 
-func zipperMerge(mul0 *Lanes, v0 *[32]byte) {
-
-	var mul0b [packetSize]byte
-	binary.LittleEndian.PutUint64(mul0b[0:], mul0[0])
-	binary.LittleEndian.PutUint64(mul0b[8:], mul0[1])
-	binary.LittleEndian.PutUint64(mul0b[16:], mul0[2])
-	binary.LittleEndian.PutUint64(mul0b[24:], mul0[3])
-
-	for half := 0; half < packetSize; half += packetSize / 2 {
-		v0[half+0] = mul0b[half+3]
-		v0[half+1] = mul0b[half+12]
-		v0[half+2] = mul0b[half+2]
-		v0[half+3] = mul0b[half+5]
-		v0[half+4] = mul0b[half+14]
-		v0[half+5] = mul0b[half+1]
-		v0[half+6] = mul0b[half+15]
-		v0[half+7] = mul0b[half+0]
-		v0[half+8] = mul0b[half+11]
-		v0[half+9] = mul0b[half+4]
-		v0[half+10] = mul0b[half+10]
-		v0[half+11] = mul0b[half+13]
-		v0[half+12] = mul0b[half+9]
-		v0[half+13] = mul0b[half+6]
-		v0[half+14] = mul0b[half+8]
-		v0[half+15] = mul0b[half+7]
-	}
+func zipperMergeAndAdd(v1, v0 uint64, add1, add0 *uint64) {
+	*add0 += (((v0 & 0xff000000) | (v1 & 0xff00000000)) >> 24) |
+		(((v0 & 0xff0000000000) | (v1 & 0xff000000000000)) >> 16) |
+		(v0 & 0xff0000) | ((v0 & 0xff00) << 32) |
+		((v1 & 0xff00000000000000) >> 8) | (v0 << 56)
+	*add1 += (((v1 & 0xff000000) | (v0 & 0xff00000000)) >> 24) |
+		(v1 & 0xff0000) | ((v1 & 0xff0000000000) >> 16) |
+		((v1 & 0xff00) << 24) | ((v0 & 0xff000000000000) >> 8) |
+		((v1 & 0xff) << 48) | (v0 & 0xff00000000000000)
 }
 
 func rot32(x uint64) uint64 {
 	return (x >> 32) | (x << 32)
+}
+
+func rotate32By(count uint, lanes *Lanes) {
+	for i := 0; i < 4; i++ {
+		half0 := uint32(lanes[i] & 0xffffffff)
+		half1 := uint32(lanes[i] >> 32)
+		lanes[i] = uint64(half0<<count) | uint64(half0>>(32-count))
+		lanes[i] |= uint64((half1<<count)|(half1>>(32-count))) << 32
+	}
+}
+
+func rotate64by32(v, permuted *Lanes) {
+	permuted[0] = rot32(v[0])
+	permuted[1] = rot32(v[1])
+	permuted[2] = rot32(v[2])
+	permuted[3] = rot32(v[3])
 }
 
 func permute(v, permuted *Lanes) {
@@ -131,36 +123,47 @@ func (s *state) PermuteAndUpdate() {
 
 func Hash(key Lanes, bytes []byte) uint64 {
 
-	if useSSE {
+	if false && useSSE {
 		return hashSSE(&key, &init0, &init1, bytes)
 	}
 
 	var s state
 
 	size := len(bytes)
-	remainder := size & (packetSize - 1)
+	sizeMod32 := size & (packetSize - 1)
 
 	newstate(&s, key)
 	// Hash entire 32-byte packets.
-	truncatedSize := size - remainder
+	truncatedSize := size - sizeMod32
 	for i := 0; i < truncatedSize/8; i += NumLanes {
 		s.Update(bytes)
 		bytes = bytes[32:]
 	}
 
-	// Update with final 32-byte packet.
-	remainderMod4 := remainder & 3
-	packet4 := uint32(size) << 24
-	finalBytes := bytes[len(bytes)-remainderMod4:]
-	for i := 0; i < remainderMod4; i++ {
-		packet4 += uint32(finalBytes[i]) << uint(i*8)
+	if sizeMod32 != 0 {
+		// Update with final 32-byte packet.
+		for i := 0; i < NumLanes; i++ {
+			s.v0[i] += uint64(sizeMod32)<<32 + uint64(sizeMod32)
+		}
+		rotate32By(uint(sizeMod32), &s.v1)
+
+		sizeMod4 := sizeMod32 & 3
+		var finalPacket [packetSize]byte
+		copy(finalPacket[:], bytes[:len(bytes)-sizeMod4])
+		remainder := bytes[len(bytes)-sizeMod4:]
+
+		if sizeMod32&16 != 0 {
+			copy(finalPacket[28:], bytes[len(bytes)-4:])
+		} else {
+			if sizeMod4 != 0 {
+				finalPacket[16+0] = remainder[0]
+				finalPacket[16+1] = remainder[sizeMod4>>1]
+				finalPacket[16+2] = remainder[sizeMod4-1]
+			}
+		}
+
+		s.Update(finalPacket[:])
 	}
-
-	var finalPacket [packetSize]byte
-	copy(finalPacket[:], bytes[:len(bytes)-remainderMod4])
-	binary.LittleEndian.PutUint32(finalPacket[packetSize-4:], packet4)
-
-	s.Update(finalPacket[:])
 
 	return s.Finalize()
 }
