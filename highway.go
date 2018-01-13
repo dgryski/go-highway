@@ -123,7 +123,7 @@ func (s *state) PermuteAndUpdate() {
 
 func Hash(key Lanes, bytes []byte) uint64 {
 
-	if false && useSSE {
+	if useSSE {
 		return hashSSE(&key, &init0, &init1, bytes)
 	}
 

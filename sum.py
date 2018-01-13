@@ -37,6 +37,17 @@ def permute(dstlo, dsthi, srclo, srchi):
     PSHUFD(dstlo, srchi, mm_shufmask(2, 3, 0, 1))
     PSHUFD(dsthi, srclo, mm_shufmask(2, 3, 0, 1))
 
+def rotate32By(dst, count):
+    t = XMMRegister()
+    c = XMMRegister()
+    MOVDQA(t, dst)
+    MOVQ(c, count)
+    PSLLD(t, c)
+    SUB(count, 32)
+    NEG(count)
+    MOVQ(c, count)
+    PSRLD(dst, c)
+    POR(dst, t)
 
 def zippermask():
     x = GeneralPurposeRegister64()
@@ -74,8 +85,8 @@ def update(plo, phi, state):
     MOVDQA(srchi, state.v0hi)
     MOVDQA(dstlo, state.v1lo)
     MOVDQA(dsthi, state.v1hi)
-    PSRLQ(dstlo, 32)
-    PSRLQ(dsthi, 32)
+    PSRLQ(srclo, 32)
+    PSRLQ(srchi, 32)
 
     PMULUDQ(dstlo, srclo)
     PMULUDQ(dsthi, srchi)
@@ -93,8 +104,8 @@ def update(plo, phi, state):
     MOVDQA(srchi, state.v1hi)
     MOVDQA(dstlo, state.v0lo)
     MOVDQA(dsthi, state.v0hi)
-    PSRLQ(dstlo, 32)
-    PSRLQ(dsthi, 32)
+    PSRLQ(srclo, 32)
+    PSRLQ(srchi, 32)
 
     PMULUDQ(dstlo, srclo)
     PMULUDQ(dsthi, srchi)
@@ -150,7 +161,7 @@ def newstate(reg_keys, reg_init0, reg_init1):
     MOVDQU(state.mul1lo, [reg_init1])
     MOVDQU(state.mul1hi, [reg_init1 + 16])
 
-    permute(state.v1lo, state.v1hi, state.v0lo, state.v0hi)
+    permute(state.v1hi, state.v1lo, state.v0lo, state.v0hi)
 
     PXOR(state.v0lo, state.mul0lo)
     PXOR(state.v0hi, state.mul0hi)
@@ -268,57 +279,93 @@ def MakeHash():
 
         ###
 
-        # reg_p_len is now remainder
+        # reg_p_len is now remainder mod 32
+        lfinalize = Label("finalize")
+        CMP(reg_p_len, 0)
+        JZ(lfinalize)
 
-        # remainderMod4 := remainder & 3
-        reg_remMod4 = GeneralPurposeRegister64()
-        MOV(reg_remMod4, reg_p_len)
-        AND(reg_remMod4, 3)
 
-        # packet4 := uint32(size) << 24
-        reg_size = GeneralPurposeRegister64()
-        LOAD.ARGUMENT(reg_size, p_len)
-        SHL(reg_size, 24)
-        reg_packet4 = GeneralPurposeRegister32()
-        MOV(reg_packet4, reg_size.as_dword)
+        # TODO(dgryski): remove this variable; reuse reg_p_len
+        reg_remMod32 = GeneralPurposeRegister64()
+        MOV(reg_remMod32, reg_p_len)
+        SHL(reg_remMod32, 32)
+        ADD(reg_remMod32, reg_p_len)
 
-        # finalBytes := bytes[len(bytes)-remainderMod4:]
-        finalBytes = GeneralPurposeRegister64()
-        MOV(finalBytes, reg_p)
-        ADD(finalBytes, reg_p_len)
-        SUB(finalBytes, reg_remMod4)
-
-        #for i := 0; i < remainderMod4; i++ {
-        #	packet4 += uint32(finalBytes[i]) << uint(i*8)
-        #}
-        b = GeneralPurposeRegister32()
-        done = Label()
-        for i in range(4):
-            CMP(reg_remMod4, 0)
-            JZ(done)
-            MOVZX(b, byte[finalBytes + i])
-            SHL(b, i * 8)
-            ADD(reg_packet4, b)
-            DEC(reg_remMod4)
-        LABEL(done)
-
-        # copy(finalPacket[:], bytes[:len(bytes)-remainderMod4])
-        PXOR(reg_plo, reg_plo)
-        PXOR(reg_phi, reg_phi)
+        reg_xmm0 = XMMRegister()
+        MOVQ(reg_xmm0, reg_remMod32)
+        PINSRQ(reg_xmm0, reg_remMod32, 1)
+        PADDQ(state.v0lo, reg_xmm0)
+        PADDQ(state.v0hi, reg_xmm0)
 
         reg_copylen = GeneralPurposeRegister64()
+        MOV(reg_copylen, reg_p_len)
+        rotate32By(state.v1lo, reg_copylen)
+        MOV(reg_copylen, reg_p_len)
+        rotate32By(state.v1hi, reg_copylen)
 
+        # copy(finalPacket[:], bytes[:len(bytes)-remainderMod4])
         MOV(reg_copylen, reg_p_len)
         AND(reg_copylen, 3)
         NEG(reg_copylen)
         ADD(reg_copylen, reg_p_len)
 
+        reg_remainder = GeneralPurposeRegister64()
+        MOV(reg_remainder, reg_p)
+
+        PXOR(reg_plo, reg_plo)
+        PXOR(reg_phi, reg_phi)
+        # reg_p is destroyed
         memcpy32(reg_plo, reg_phi, reg_p, reg_copylen)
 
-        # binary.LittleEndian.PutUint32(finalPacket[packetSize-4:], packet4)
-        PINSRD(reg_phi, reg_packet4, 3)
+        mod4check = Label("mod4check")
+        afterMod4 = Label("afterMod4")
+        CMP(reg_p_len, 16)
+        JL(mod4check)
+        # TODO(dgryski): copy(finalPacket[28:], bytes[len(bytes)-4:])
+        final = GeneralPurposeRegister32()
+        ADD(reg_remainder, reg_p_len)
+        SUB(reg_remainder, 4)
+        MOV(final, [reg_remainder])
+        # load last 4 bytes from remainder
+        # shove them into last 4 bytes of final packet
+        # == high 4 bytes of
+        PINSRD(reg_phi, final, 3)
+        JMP(afterMod4)
+        LABEL(mod4check)
+        MOV(reg_copylen, reg_p_len)
+        AND(reg_copylen, 3)
+        NEG(reg_copylen)
+        ADD(reg_copylen, reg_p_len)
+        ADD(reg_remainder, reg_copylen)
+        reg_remMod4 = GeneralPurposeRegister64()
+        MOV(reg_remMod4, reg_p_len)
+        AND(reg_remMod4, 3)
+        JZ(afterMod4)
+        final = GeneralPurposeRegister64()
+        XOR(final, final)
+        MOVZX(final, byte[reg_remainder])
+        tmp = GeneralPurposeRegister64()
+        MOV(tmp, reg_remMod4)
+        SHR(tmp, 1)
+        offs = GeneralPurposeRegister64()
+        MOV(offs, reg_remainder)
+        ADD(offs, tmp)
+        MOVZX(tmp, byte[offs])
+        SHL(tmp, 8)
+        OR(final, tmp)
+        MOV(tmp, reg_remMod4)
+        SUB(tmp, 1)
+        MOV(offs, reg_remainder)
+        ADD(offs, tmp)
+        MOVZX(tmp, byte[offs])
+        SHL(tmp, 16)
+        OR(final, tmp)
+        PINSRQ(reg_phi, final, 0)
+        LABEL(afterMod4)
 
         update(reg_plo, reg_phi, state)
+
+        LABEL(lfinalize)
         ret = finalize(state)
         RETURN(ret)
 

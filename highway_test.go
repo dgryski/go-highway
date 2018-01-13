@@ -40,6 +40,28 @@ func TestHighway(t *testing.T) {
 
 		if h := Hash(key, input[:i]); h != tests[i] {
 			t.Errorf("Hash(..., input[:%d])=%016x, want %016x\n", i, h, tests[i])
+		} else {
+			t.Logf("PASS: Hash(..., input[:%d])=%016x, want %016x\n", i, h, tests[i])
+		}
+	}
+}
+
+func TestCompare(t *testing.T) {
+
+	input := make([]byte, 64)
+
+	key := Lanes{0x0706050403020100, 0x0F0E0D0C0B0A0908, 0x1716151413121110, 0x1F1E1D1C1B1A1918}
+
+	for i := range input {
+		input[i] = byte(i)
+
+		want := Hash(key, input[:i])
+		got := hashSSE(&key, &init0, &init1, input[:i])
+
+		if got != want {
+			t.Errorf("hashSSE(..., input[:%d])=%016x, want %016x\n", i, got, want)
+		} else {
+			t.Logf("PASS: hashSSE(..., input[:%d])=%016x\n", i, got)
 		}
 	}
 }
